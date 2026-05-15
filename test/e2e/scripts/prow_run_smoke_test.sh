@@ -593,7 +593,7 @@ run_uninstall_test() {
     export E2E_MODEL_NAMESPACE="$MODEL_NAMESPACE"
 
     if ! PYTHONPATH="$test_dir:${PYTHONPATH:-}" pytest \
-        -v --maxfail=1 --disable-warnings \
+        -v --disable-warnings \
         --junitxml="$xml" \
         --html="$html" --self-contained-html \
         --capture=tee-sys --show-capture=all --log-level=INFO \
@@ -915,4 +915,4 @@ else
     run_uninstall_test
 fi
 
-echo "🎉 Deployment and uninstall tests completed successfully!"
+echo "🎉 Smoke test phases completed successfully!"
