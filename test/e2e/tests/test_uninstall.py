@@ -9,12 +9,15 @@ Ordered delete sequence (documented for CI reproducibility):
   1. Delete user-created MaaS CRs with finalizers (MaaSSubscription, MaaSAuthPolicy,
      MaaSModelRef) while the controller is still running so it can process their
      finalizers (maas.opendatahub.io/*-cleanup).
-  2. Delete MaaS Config CR  (configs.maas.opendatahub.io/default)
-     — Kubernetes GC cascades to all operands whose ownerReferences point to Config.
-  3. Delete DataScienceCluster  (default-dsc)
+  2. Delete DataScienceCluster  (default-dsc)
      — Removes the KServe / ModelsAsService component enablement.
-  4. Delete DSCInitialization  (default-dsci)
+  3. Delete DSCInitialization  (default-dsci)
      — Removes the ODH platform initialization resource.
+  4. Delete MaaS Config CR  (configs.maas.opendatahub.io/default)
+     — Must happen AFTER the controller Deployment is gone because the
+       LifecycleReconciler recreates Config while the controller is running.
+       Once the controller is terminated, Kubernetes GC cascades to all
+       remaining operands whose ownerReferences point to Config.
 
 After a bounded wait the test asserts:
   - No MaaS CRD instances survive (MaaSModelRef, MaaSAuthPolicy, MaaSSubscription,
@@ -55,6 +58,8 @@ MAAS_SUBSCRIPTION_NAMESPACE = os.environ.get(
 )
 MODEL_NAMESPACE = os.environ.get("E2E_MODEL_NAMESPACE", "llm")
 UNINSTALL_TIMEOUT = int(os.environ.get("E2E_UNINSTALL_TIMEOUT", "300"))
+if UNINSTALL_TIMEOUT <= 0:
+    raise ValueError(f"E2E_UNINSTALL_TIMEOUT must be positive, got {UNINSTALL_TIMEOUT}")
 POLL_INTERVAL = 10
 
 MAAS_CR_KINDS = [
@@ -250,9 +255,9 @@ class TestUninstallMaaSInfrastructure:
 
         Delete sequence:
           1. User-created MaaS CRs with finalizers (while controller is running)
-          2. MaaS Config CR (configs.maas.opendatahub.io/default)
-          3. DataScienceCluster (default-dsc)
-          4. DSCInitialization (default-dsci)
+          2. DataScienceCluster (default-dsc)
+          3. DSCInitialization (default-dsci)
+          4. MaaS Config CR (after controller is gone)
         """
         log.info(
             "=== Starting MaaS uninstall sequence (timeout=%ds) ===", UNINSTALL_TIMEOUT
@@ -265,22 +270,43 @@ class TestUninstallMaaSInfrastructure:
         # leaving these CRs stuck in Terminating.
         _delete_finalizer_bearing_crs()
 
-        # Step 2: Delete the MaaS Config CR.
-        # All operands whose ownerReferences point to Config will be garbage-collected.
-        log.info("Step 2/4: Deleting MaaS Config CR (configs.maas.opendatahub.io/default)")
-        _delete_resource("configs.maas.opendatahub.io", "default")
-
-        # Step 3: Delete the DataScienceCluster.
-        log.info("Step 3/4: Deleting DataScienceCluster (default-dsc)")
+        # Step 2: Delete the DataScienceCluster.
+        log.info("Step 2/4: Deleting DataScienceCluster (default-dsc)")
         _delete_resource(
             "datasciencecluster", "default-dsc", namespace=DEPLOYMENT_NAMESPACE
         )
 
-        # Step 4: Delete DSCInitialization.
-        log.info("Step 4/4: Deleting DSCInitialization (default-dsci)")
+        # Step 3: Delete DSCInitialization.
+        log.info("Step 3/4: Deleting DSCInitialization (default-dsci)")
         _delete_resource(
             "dscinitializations", "default-dsci", namespace=DEPLOYMENT_NAMESPACE
         )
+
+        # Wait for the maas-controller Deployment to be removed before
+        # deleting Config. The LifecycleReconciler recreates Config while
+        # the controller is running, so Config must be deleted only after
+        # the controller is gone.
+        log.info(
+            "Waiting for maas-controller Deployment to be removed (up to %ds)...",
+            UNINSTALL_TIMEOUT,
+        )
+        deadline = time.time() + UNINSTALL_TIMEOUT
+        while time.time() < deadline:
+            if not _resource_exists(
+                "deployment", "maas-controller", namespace=DEPLOYMENT_NAMESPACE
+            ):
+                log.info("maas-controller Deployment is gone")
+                break
+            time.sleep(POLL_INTERVAL)
+        else:
+            log.warning("Timed out waiting for maas-controller Deployment removal")
+
+        # Step 4: Delete the MaaS Config CR.
+        # Now that the controller is gone it cannot recreate Config.
+        # Kubernetes GC cascades to any remaining operands whose
+        # ownerReferences point to Config.
+        log.info("Step 4/4: Deleting MaaS Config CR (configs.maas.opendatahub.io/default)")
+        _delete_resource("configs.maas.opendatahub.io", "default")
 
         # Wait for garbage collection to propagate.
         log.info(
