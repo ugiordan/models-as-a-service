@@ -13,10 +13,6 @@
          <lastmod>2026-05-21</lastmod>
     </url>
     <url>
-         <loc>https://opendatahub-io.github.io/models-as-a-service/dev/advanced-administration/observability/</loc>
-         <lastmod>2026-05-21</lastmod>
-    </url>
-    <url>
          <loc>https://opendatahub-io.github.io/models-as-a-service/dev/advanced-administration/subscription-cardinality/</loc>
          <lastmod>2026-05-21</lastmod>
     </url>
@@ -138,6 +134,22 @@
     </url>
     <url>
          <loc>https://opendatahub-io.github.io/models-as-a-service/dev/migration/upgrade-to-3.4/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://opendatahub-io.github.io/models-as-a-service/dev/observability/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://opendatahub-io.github.io/models-as-a-service/dev/observability/metrics-and-dashboards/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://opendatahub-io.github.io/models-as-a-service/dev/observability/operations/</loc>
+         <lastmod>2026-05-21</lastmod>
+    </url>
+    <url>
+         <loc>https://opendatahub-io.github.io/models-as-a-service/dev/observability/setup/</loc>
          <lastmod>2026-05-21</lastmod>
     </url>
     <url>
