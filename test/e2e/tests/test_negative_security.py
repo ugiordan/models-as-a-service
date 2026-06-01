@@ -26,6 +26,7 @@ import logging
 import ssl
 import time
 import uuid
+from typing import ClassVar
 from urllib.parse import urlparse
 
 import pytest
@@ -444,7 +445,7 @@ class TestInternalEndpointIsolation:
     Service, bypassing the gateway.
     """
 
-    _INTERNAL_PATHS = [
+    _INTERNAL_PATHS: ClassVar[list[str]] = [
         "/internal/v1/api-keys/validate",
         "/internal/v1/api-keys/cleanup",
         "/internal/v1/subscriptions/select",

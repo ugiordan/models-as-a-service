@@ -153,7 +153,7 @@ class TestMaaSAPIWatchNamespace:
             _wait_for_maas_subscription_phase(sub_name, "Active", namespace=ns)
 
             subs = _list_subscriptions(token)
-            names = [s.get("name") for s in subs]
+            names = [s.get("subscription_id_header") for s in subs]
             assert sub_name in names, (
                 f"Subscription {sub_name} in subscription namespace should be visible via GET /v1/subscriptions, got: {names}"
             )
@@ -184,7 +184,7 @@ class TestMaaSAPIWatchNamespace:
             _wait_reconcile()
 
             subs = _list_subscriptions(token)
-            names = [s.get("name") for s in subs]
+            names = [s.get("subscription_id_header") for s in subs]
             assert sub_name not in names, (
                 f"Subscription {sub_name} in {other_ns} should NOT be visible via GET /v1/subscriptions, got: {names}"
             )
