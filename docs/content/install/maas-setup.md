@@ -9,6 +9,7 @@ Complete [Operator Setup](platform-setup.md) before proceeding.
 3. [Configure DataScienceCluster](#configure-datasciencecluster) — Enable KServe and modelsAsService in your DataScienceCluster
 4. [Model Setup](model-setup.md) — Deploy sample models
 5. [Validation](validation.md) — Verify the deployment
+6. [Enable Observability](#enable-observability) — Set up metrics, dashboards, and monitoring (optional but recommended)
 
 ## Database Setup
 
@@ -279,6 +280,59 @@ kubectl patch odhdashboardconfig odh-dashboard-config \
     These flags are defined in the odh-dashboard source. The `OdhDashboardConfig` CRD is of
     API version `opendatahub.io/v1alpha`. The operator re-creates this resource with factory
     defaults if it is deleted, but does not overwrite user changes to existing fields.
+
+## Enable Observability
+
+Observability is optional but recommended. Without it, metrics, dashboards, and usage tracking will not function. You can enable observability at any time after the initial install without redeploying MaaS.
+
+!!! info "What you lose if you skip this step"
+    - **No metrics** — Prometheus will not scrape MaaS components (ServiceMonitors are ignored without User Workload Monitoring).
+    - **No dashboards** — Token usage, request volume, and rate-limiting panels will show no data.
+    - **No per-subscription latency** — Gateway latency cannot be broken down by subscription.
+    - **Tenant status gaps** — Some Tenant condition checks depend on observability components being present.
+
+    If you choose to defer, you can return to this section later to enable observability.
+
+### Prerequisites for Observability
+
+1. **User Workload Monitoring** must be enabled on the cluster for Prometheus to scrape metrics from MaaS components:
+
+    ```bash
+    kubectl apply -f - <<EOF
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: cluster-monitoring-config
+      namespace: openshift-monitoring
+    data:
+      config.yaml: |
+        enableUserWorkload: true
+    EOF
+
+    # Verify prometheus-user-workload pods are running
+    kubectl get pods -n openshift-user-workload-monitoring
+    ```
+
+2. **Kuadrant Observability** must be enabled for rate-limiting and usage metrics (`authorized_calls`, `limited_calls`):
+
+    ```bash
+    kubectl patch kuadrant kuadrant -n kuadrant-system --type=merge \
+      -p '{"spec":{"observability":{"enable":true}}}'
+
+    # Verify PodMonitor was created
+    kubectl get podmonitor -n kuadrant-system kuadrant-limitador-monitor
+    ```
+
+3. **Telemetry** is enabled by default on the Tenant CR (`spec.telemetry.enabled: true`). Verify or enable it:
+
+    ```bash
+    kubectl patch tenant default-tenant -n models-as-a-service --type=merge \
+      -p '{"spec":{"telemetry":{"enabled":true}}}'
+    ```
+
+For the full setup guide including Grafana dashboards, the `install-observability.sh` script, and RHOAI Dashboard integration, see [Observability Setup](../observability/setup.md).
+
+For RHOAI-specific observability configuration, see [Managing observability in RHOAI](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/3.4/html/managing_openshift_ai/managing-observability_managing-rhoai).
 
 ## Next steps
 
