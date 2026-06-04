@@ -16,6 +16,9 @@ ticket triage, CI reproduction, compatibility checks, and upgrade planning.
 
 **Status key:** GA = Generally Available, TP = Tech Preview.
 
+**Note:** MaaS v0.1.0 is not listed above because it was an intermediate
+upstream release not shipped with any RHOAI version.
+
 ## Image references
 
 Production images are published to the Red Hat registry. The image tag
