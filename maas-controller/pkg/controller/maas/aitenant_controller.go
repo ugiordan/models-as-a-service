@@ -694,11 +694,12 @@ func (r *AITenantReconciler) ensureGatewayClaim(ctx context.Context, aitenant *m
 			return fmt.Errorf("get existing gateway claim %s/%s: %w", claimNamespace, claimName, err)
 		}
 		if isClaimOwnedByAITenant(&existing, aitenant) {
-			prevOwnerCount := len(existing.OwnerReferences)
+			prevRefs := make([]metav1.OwnerReference, len(existing.OwnerReferences))
+			copy(prevRefs, existing.OwnerReferences)
 			if err := controllerutil.SetControllerReference(aitenant, &existing, r.Scheme); err != nil {
 				return fmt.Errorf("set owner reference on existing gateway claim %s/%s: %w", claimNamespace, claimName, err)
 			}
-			if len(existing.OwnerReferences) != prevOwnerCount {
+			if !equality.Semantic.DeepEqual(prevRefs, existing.OwnerReferences) {
 				if err := r.Update(ctx, &existing); err != nil {
 					return fmt.Errorf("update owner reference on gateway claim %s/%s: %w", claimNamespace, claimName, err)
 				}
@@ -707,6 +708,12 @@ func (r *AITenantReconciler) ensureGatewayClaim(ctx context.Context, aitenant *m
 		}
 		ownerName := existing.Annotations[aitenantNameAnnotation]
 		ownerNamespace := existing.Annotations[aitenantNamespaceAnnotation]
+		for _, ref := range existing.GetOwnerReferences() {
+			if ref.Controller != nil && *ref.Controller && ref.Kind == "AITenant" {
+				ownerName = ref.Name
+				break
+			}
+		}
 		return fmt.Errorf(
 			"gateway %s/%s is already claimed by AITenant %s/%s; "+
 				"each AITenant requires a dedicated Gateway for isolation",
