@@ -2089,3 +2089,85 @@ func TestMaaSAuthPolicyReconciler_DefaultGateway_NoOwnerReference(t *testing.T) 
 		t.Errorf("default gateway AuthPolicy should have no OwnerReferences, got %d: %v", len(ownerRefs), ownerRefs)
 	}
 }
+
+// TestMaaSAuthPolicyReconciler_TenantGateway_StaleCleanup verifies that the controller
+// deletes an orphaned tenant gateway AuthPolicy when the corresponding Gateway no longer
+// exists. This simulates the scenario where a tenant Gateway has been deleted (e.g. via
+// AITenant cascade) but the managed AuthPolicy was not garbage-collected (e.g. because it
+// was created before OwnerReferences were added).
+func TestMaaSAuthPolicyReconciler_TenantGateway_StaleCleanup(t *testing.T) {
+	const (
+		modelName      = "llm"
+		policyNS       = "tenant-ns"
+		defaultGwNS    = "default-gw-ns"
+		defaultGwName  = "maas-default-gateway"
+		tenantGwNS     = "tenant-gw-ns"
+		tenantGwName   = "tenant-gateway"
+		maasPolicyName = "policy-a"
+		httpRouteName  = "maas-" + modelName
+	)
+
+	model := newMaaSModelRef(modelName, policyNS, "ExternalModel", modelName)
+	route := newHTTPRoute(httpRouteName, policyNS)
+	maasPolicy := newMaaSAuthPolicy(maasPolicyName, policyNS, "team-a",
+		maasv1alpha1.ModelRef{Name: modelName, Namespace: policyNS})
+
+	// Tenant CR with a custom gateway ref (the Gateway itself will NOT be created)
+	tenant := &maasv1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      maasv1alpha1.TenantInstanceName,
+			Namespace: policyNS,
+		},
+		Spec: maasv1alpha1.TenantSpec{
+			GatewayRef: maasv1alpha1.TenantGatewayRef{
+				Namespace: tenantGwNS,
+				Name:      tenantGwName,
+			},
+		},
+	}
+
+	// Pre-existing gateway-scoped AuthPolicy with managed labels — simulates a
+	// resource created before OwnerReferences were added that was not garbage-collected
+	// when the Gateway was deleted.
+	staleAuthPolicyName := tenantGwName + "-maas-auth"
+	staleAP := &unstructured.Unstructured{}
+	staleAP.SetGroupVersionKind(schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1", Kind: "AuthPolicy"})
+	staleAP.SetName(staleAuthPolicyName)
+	staleAP.SetNamespace(tenantGwNS)
+	staleAP.SetLabels(map[string]string{
+		"app.kubernetes.io/managed-by": "maas-controller",
+		"app.kubernetes.io/part-of":    "maas-gateway-auth",
+		"app.kubernetes.io/component":  "gateway-auth",
+	})
+	// Give it a minimal spec so it looks like a real AuthPolicy
+	_ = unstructured.SetNestedField(staleAP.Object, "sentinel-gateway", "spec", "targetRef", "name")
+
+	// NOTE: We intentionally do NOT create a Gateway object — the Gateway has been deleted.
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRESTMapper(testRESTMapper()).
+		WithObjects(model, route, maasPolicy, tenant, staleAP).
+		WithStatusSubresource(&maasv1alpha1.MaaSAuthPolicy{}).
+		Build()
+
+	r := &MaaSAuthPolicyReconciler{
+		Client:           c,
+		Scheme:           scheme,
+		MaaSAPINamespace: "maas-system",
+		GatewayNamespace: defaultGwNS,
+		GatewayName:      defaultGwName,
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: maasPolicyName, Namespace: policyNS}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile: unexpected error: %v", err)
+	}
+
+	// Verify the stale tenant gateway AuthPolicy was deleted
+	got := &unstructured.Unstructured{}
+	got.SetGroupVersionKind(schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1", Kind: "AuthPolicy"})
+	getErr := c.Get(context.Background(), types.NamespacedName{Name: staleAuthPolicyName, Namespace: tenantGwNS}, got)
+	if !apierrors.IsNotFound(getErr) {
+		t.Fatalf("expected stale tenant gateway AuthPolicy %q to be deleted, but Get returned: %v", staleAuthPolicyName, getErr)
+	}
+}
