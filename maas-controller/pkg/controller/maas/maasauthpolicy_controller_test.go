@@ -1932,3 +1932,160 @@ func TestAPIKeyCELPredicates(t *testing.T) {
 		}
 	})
 }
+
+// TestMaaSAuthPolicyReconciler_TenantGateway_OwnerReference verifies that the controller
+// sets an OwnerReference on gateway-scoped AuthPolicies created for tenant-specific gateways.
+// When the Gateway is deleted (e.g., via AITenant cascade deletion), Kubernetes garbage
+// collection automatically deletes the AuthPolicy, preventing orphaned resources.
+func TestMaaSAuthPolicyReconciler_TenantGateway_OwnerReference(t *testing.T) {
+	const (
+		modelName      = "llm"
+		policyNS       = "tenant-ns"
+		defaultGwNS    = "default-gw-ns"
+		defaultGwName  = "maas-default-gateway"
+		tenantGwNS     = "tenant-gw-ns"
+		tenantGwName   = "tenant-gateway"
+		maasPolicyName = "policy-a"
+		httpRouteName  = "maas-" + modelName
+	)
+
+	model := newMaaSModelRef(modelName, policyNS, "ExternalModel", modelName)
+	route := newHTTPRoute(httpRouteName, policyNS)
+	maasPolicy := newMaaSAuthPolicy(maasPolicyName, policyNS, "team-a",
+		maasv1alpha1.ModelRef{Name: modelName, Namespace: policyNS})
+
+	// Tenant CR with a custom gateway ref
+	tenant := &maasv1alpha1.Tenant{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      maasv1alpha1.TenantInstanceName,
+			Namespace: policyNS,
+		},
+		Spec: maasv1alpha1.TenantSpec{
+			GatewayRef: maasv1alpha1.TenantGatewayRef{
+				Namespace: tenantGwNS,
+				Name:      tenantGwName,
+			},
+		},
+	}
+
+	// Gateway object — UID is needed for the OwnerReference
+	gateway := &gatewayapiv1.Gateway{
+		TypeMeta: metav1.TypeMeta{
+			APIVersion: gatewayapiv1.GroupVersion.String(),
+			Kind:       "Gateway",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      tenantGwName,
+			Namespace: tenantGwNS,
+			UID:       "gw-uid-12345",
+		},
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRESTMapper(testRESTMapper()).
+		WithObjects(model, route, maasPolicy, tenant, gateway).
+		WithStatusSubresource(&maasv1alpha1.MaaSAuthPolicy{}).
+		Build()
+
+	r := &MaaSAuthPolicyReconciler{
+		Client:           c,
+		Scheme:           scheme,
+		MaaSAPINamespace: "maas-system",
+		GatewayNamespace: defaultGwNS,
+		GatewayName:      defaultGwName,
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: maasPolicyName, Namespace: policyNS}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile: unexpected error: %v", err)
+	}
+
+	// Verify the tenant gateway AuthPolicy was created with OwnerReference
+	ap := &unstructured.Unstructured{}
+	ap.SetGroupVersionKind(schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1", Kind: "AuthPolicy"})
+	expectedAPName := tenantGwName + "-maas-auth"
+	if err := c.Get(context.Background(), types.NamespacedName{Name: expectedAPName, Namespace: tenantGwNS}, ap); err != nil {
+		t.Fatalf("Get tenant gateway AuthPolicy %q: %v", expectedAPName, err)
+	}
+
+	ownerRefs := ap.GetOwnerReferences()
+	if len(ownerRefs) == 0 {
+		t.Fatal("tenant gateway AuthPolicy should have OwnerReference to Gateway, but has none")
+	}
+	if len(ownerRefs) != 1 {
+		t.Fatalf("expected exactly 1 OwnerReference, got %d", len(ownerRefs))
+	}
+
+	ref := ownerRefs[0]
+	if ref.APIVersion != gatewayapiv1.GroupVersion.String() {
+		t.Errorf("OwnerReference APIVersion = %q, want %q", ref.APIVersion, gatewayapiv1.GroupVersion.String())
+	}
+	if ref.Kind != "Gateway" {
+		t.Errorf("OwnerReference Kind = %q, want %q", ref.Kind, "Gateway")
+	}
+	if ref.Name != tenantGwName {
+		t.Errorf("OwnerReference Name = %q, want %q", ref.Name, tenantGwName)
+	}
+	if ref.UID != gateway.UID {
+		t.Errorf("OwnerReference UID = %q, want %q", ref.UID, gateway.UID)
+	}
+	if ref.Controller == nil || !*ref.Controller {
+		t.Error("OwnerReference Controller should be true")
+	}
+	if ref.BlockOwnerDeletion == nil || !*ref.BlockOwnerDeletion {
+		t.Error("OwnerReference BlockOwnerDeletion should be true")
+	}
+}
+
+// TestMaaSAuthPolicyReconciler_DefaultGateway_NoOwnerReference verifies that the controller
+// does NOT set an OwnerReference on the default gateway AuthPolicy. The default gateway
+// lifecycle is managed independently and should not be subject to cascade deletion.
+func TestMaaSAuthPolicyReconciler_DefaultGateway_NoOwnerReference(t *testing.T) {
+	const (
+		modelName      = "llm"
+		namespace      = "default"
+		gatewayNS      = "gateway-ns"
+		gatewayName    = "maas-default-gateway"
+		httpRouteName  = "maas-" + modelName
+		maasPolicyName = "policy-a"
+	)
+
+	model := newMaaSModelRef(modelName, namespace, "ExternalModel", modelName)
+	route := newHTTPRoute(httpRouteName, namespace)
+	maasPolicy := newMaaSAuthPolicy(maasPolicyName, namespace, "team-a",
+		maasv1alpha1.ModelRef{Name: modelName, Namespace: namespace})
+
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRESTMapper(testRESTMapper()).
+		WithObjects(model, route, maasPolicy).
+		WithStatusSubresource(&maasv1alpha1.MaaSAuthPolicy{}).
+		Build()
+
+	r := &MaaSAuthPolicyReconciler{
+		Client:           c,
+		Scheme:           scheme,
+		MaaSAPINamespace: "maas-system",
+		GatewayNamespace: gatewayNS,
+		GatewayName:      gatewayName,
+	}
+
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: maasPolicyName, Namespace: namespace}}
+	if _, err := r.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile: unexpected error: %v", err)
+	}
+
+	// Verify the default gateway AuthPolicy exists
+	ap := &unstructured.Unstructured{}
+	ap.SetGroupVersionKind(schema.GroupVersionKind{Group: "kuadrant.io", Version: "v1", Kind: "AuthPolicy"})
+	if err := c.Get(context.Background(), types.NamespacedName{Name: maasGatewayAuthPolicyName, Namespace: gatewayNS}, ap); err != nil {
+		t.Fatalf("Get default gateway AuthPolicy: %v", err)
+	}
+
+	// Default gateway AuthPolicy must NOT have OwnerReferences
+	ownerRefs := ap.GetOwnerReferences()
+	if len(ownerRefs) != 0 {
+		t.Errorf("default gateway AuthPolicy should have no OwnerReferences, got %d: %v", len(ownerRefs), ownerRefs)
+	}
+}

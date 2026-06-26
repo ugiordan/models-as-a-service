@@ -356,6 +356,7 @@ func subscriptionGatewayCacheKeySelector() string {
 //+kubebuilder:rbac:groups=maas.opendatahub.io,resources=maasmodelrefs,verbs=get;list;watch
 //+kubebuilder:rbac:groups=kuadrant.io,resources=authpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
+//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
 //+kubebuilder:rbac:groups=config.openshift.io,resources=authentications,verbs=get
 //+kubebuilder:rbac:groups=maas.opendatahub.io,resources=tenants,verbs=get;list;watch
 //+kubebuilder:rbac:groups="",resources=events,verbs=create;patch
@@ -1047,7 +1048,8 @@ func (r *MaaSAuthPolicyReconciler) reconcileGatewayAuthPolicy(ctx context.Contex
 
 	// Use legacy name for default gateway (backward compatibility), dynamic name for tenant gateways
 	authPolicyName := maasGatewayAuthPolicyName
-	if gatewayNamespace != r.GatewayNamespace || gatewayName != r.GatewayName {
+	isTenantGateway := gatewayNamespace != r.GatewayNamespace || gatewayName != r.GatewayName
+	if isTenantGateway {
 		// This is a tenant-specific gateway, use dynamic naming
 		authPolicyName = fmt.Sprintf("%s-maas-auth", gatewayName)
 	}
@@ -1061,6 +1063,30 @@ func (r *MaaSAuthPolicyReconciler) reconcileGatewayAuthPolicy(ctx context.Contex
 		"app.kubernetes.io/part-of":    "maas-gateway-auth",
 		"app.kubernetes.io/component":  "gateway-auth",
 	})
+
+	// For tenant-specific gateways, set an OwnerReference to the Gateway so that
+	// Kubernetes garbage collection automatically deletes the AuthPolicy when the
+	// Gateway is deleted (e.g., via AITenant cascade deletion). This prevents
+	// orphaned gateway-scoped AuthPolicies from accumulating in the cluster.
+	if isTenantGateway {
+		gateway := &gatewayapiv1.Gateway{}
+		gwKey := client.ObjectKey{Namespace: gatewayNamespace, Name: gatewayName}
+		if err := r.Get(ctx, gwKey, gateway); err != nil {
+			return fmt.Errorf("failed to get Gateway %s/%s for OwnerReference: %w", gatewayNamespace, gatewayName, err)
+		}
+		isController := true
+		blockDeletion := true
+		gwPolicy.SetOwnerReferences([]metav1.OwnerReference{
+			{
+				APIVersion:         gatewayapiv1.GroupVersion.String(),
+				Kind:               "Gateway",
+				Name:               gateway.Name,
+				UID:                gateway.UID,
+				Controller:         &isController,
+				BlockOwnerDeletion: &blockDeletion,
+			},
+		})
+	}
 
 	existing := &unstructured.Unstructured{}
 	existing.SetGroupVersionKind(gwPolicy.GroupVersionKind())
@@ -1088,6 +1114,11 @@ func (r *MaaSAuthPolicyReconciler) reconcileGatewayAuthPolicy(ctx context.Contex
 	snapshot := existing.DeepCopy()
 	if err := unstructured.SetNestedMap(existing.Object, spec, "spec"); err != nil {
 		return fmt.Errorf("failed to set gateway AuthPolicy spec for update: %w", err)
+	}
+	// Ensure OwnerReferences are set on existing tenant gateway AuthPolicies
+	// (handles upgrade from pre-ownerref versions).
+	if isTenantGateway {
+		existing.SetOwnerReferences(gwPolicy.GetOwnerReferences())
 	}
 	if equality.Semantic.DeepEqual(snapshot.Object, existing.Object) {
 		log.Info("gateway AuthPolicy unchanged, skipping update", "name", authPolicyName)
